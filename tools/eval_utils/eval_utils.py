@@ -4,11 +4,32 @@ import time
 import numpy as np
 import torch
 import tqdm
+import torch.nn as nn
 
 from pcdet.models import load_data_to_gpu
 from pcdet.utils import common_utils
 from pcdet.models.model_utils.dsnorm import set_ds_target
+from torch.nn import functional as F
+from collections import OrderedDict
 
+
+def mem_update(mem_bank, spatial_features_2d):
+    return mem_bank
+
+def update_teacher_model(model_student, model_teacher, keep_rate=0.996):
+    student_model_dict = model_student.state.dict()
+
+    new_teacher_dict = OrderedDict()
+    for key, value in model_teacher.state_dict().items():
+        if key in student_model_dict.keys():
+            new_teacher_dict[key] = (
+                student_model_dict[key]*
+                (1 - keep_rate) + value*keep_rate
+            )
+        else:
+            raise Exception("{} is not found in student model".format(key))
+
+    return new_teacher_dict
 
 def statistics_info(cfg, ret_dict, metric, disp_dict):
     for cur_thresh in cfg.MODEL.POST_PROCESSING.RECALL_THRESH_LIST:
@@ -20,7 +41,7 @@ def statistics_info(cfg, ret_dict, metric, disp_dict):
         '(%d, %d) / %d' % (metric['recall_roi_%s' % str(min_thresh)], metric['recall_rcnn_%s' % str(min_thresh)], metric['gt_num'])
 
 
-def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, save_to_file=False, result_dir=None, args=None):
+def eval_one_epoch(cfg, model, student_model, dataloader, epoch_id, logger, dist_test=False, save_to_file=False, result_dir=None, args=None):
     result_dir.mkdir(parents=True, exist_ok=True)
 
     final_output_dir = result_dir / 'final_result' / 'data'
@@ -39,15 +60,20 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
     det_annos = []
 
     logger.info('*************** EPOCH %s EVALUATION *****************' % epoch_id)
-    if dist_test:
-        num_gpus = torch.cuda.device_count()
-        local_rank = cfg.LOCAL_RANK % num_gpus
-        model = torch.nn.parallel.DistributedDataParallel(
-                model,
-                device_ids=[local_rank],
-                broadcast_buffers=False
-        )
+    # if dist_test:
+    #     num_gpus = torch.cuda.device_count()
+    #     local_rank = cfg.LOCAL_RANK % num_gpus
+    #     model = torch.nn.parallel.DistributedDataParallel(
+    #             model,
+    #             device_ids=[local_rank],
+    #             broadcast_buffers=False
+    #     )
+    np.random.seed(1024)
     model.eval()
+    mem_items = 1024
+    mem_features = 2048    
+    mem_bank = F.normalize(torch.rand((mem_items, mem_features), dtype=torch.float), dim=1).cuda()
+    
 
     if cfg.get('SELF_TRAIN', None) and cfg.SELF_TRAIN.get('DSNORM', None):
         model.apply(set_ds_target)
@@ -58,8 +84,19 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
     for i, batch_dict in enumerate(dataloader):
         load_data_to_gpu(batch_dict)
         with torch.no_grad():
-            pred_dicts, ret_dict = model(batch_dict)
+            pred_dicts, ret_dict, spatial_features_2d = model(batch_dict)
         disp_dict = {}
+        pred_dicts_stu, ret_dict_stu, spatial_features_2d_stu =student_model(batch_dict)
+        optimizer = torch.optim.SGD(student_model.parameters(), lr=0.01)
+        loss_function = nn.MSELoss()
+        loss = loss_function(pred_dicts, pred_dicts_stu)
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+        new_teacher_dict = update_teacher_model(model_student=student_model, model_teacher=model, keep_rate=0.996)
+        model.load_state_dict(new_teacher_dict)
+        
+        mem_bank = mem_update(mem_bank, spatial_features_2d)
 
         statistics_info(cfg, ret_dict, metric, disp_dict)
         annos = dataset.generate_prediction_dicts(
@@ -74,10 +111,10 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
     if cfg.LOCAL_RANK == 0:
         progress_bar.close()
 
-    if dist_test:
-        rank, world_size = common_utils.get_dist_info()
-        det_annos = common_utils.merge_results_dist(det_annos, len(dataset), tmpdir=result_dir / 'tmpdir')
-        metric = common_utils.merge_results_dist([metric], world_size, tmpdir=result_dir / 'tmpdir')
+    # if dist_test:
+    #     rank, world_size = common_utils.get_dist_info()
+    #     det_annos = common_utils.merge_results_dist(det_annos, len(dataset), tmpdir=result_dir / 'tmpdir')
+    #     metric = common_utils.merge_results_dist([metric], world_size, tmpdir=result_dir / 'tmpdir')
 
     logger.info('*************** Performance of EPOCH %s *****************' % epoch_id)
     sec_per_example = (time.time() - start_time) / len(dataloader.dataset)
@@ -87,11 +124,11 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
         return {}
 
     ret_dict = {}
-    if dist_test:
-        for key, val in metric[0].items():
-            for k in range(1, world_size):
-                metric[0][key] += metric[k][key]
-        metric = metric[0]
+    # if dist_test:
+    #     for key, val in metric[0].items():
+    #         for k in range(1, world_size):
+    #             metric[0][key] += metric[k][key]
+    #     metric = metric[0]
 
     gt_num_cnt = metric['gt_num']
     for cur_thresh in cfg.MODEL.POST_PROCESSING.RECALL_THRESH_LIST:
