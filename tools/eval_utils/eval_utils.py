@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import tqdm
 
+from collections import OrdereDict
 from pcdet.models import load_data_to_gpu
 from pcdet.utils import common_utils
 from pcdet.models.model_utils.dsnorm import set_ds_target
@@ -19,8 +20,23 @@ def statistics_info(cfg, ret_dict, metric, disp_dict):
     disp_dict['recall_%s' % str(min_thresh)] = \
         '(%d, %d) / %d' % (metric['recall_roi_%s' % str(min_thresh)], metric['recall_rcnn_%s' % str(min_thresh)], metric['gt_num'])
 
+@torch.no_grad()
+def update_teacher_model(model_student, model_teacher, keep_rate=0.996):
+    student_model_dict = model_student.state_dict()
+    new_teacher_dict = OrderedDict()
+    for key, value in model_teacher.state_dict().items():
+        if key in student_model_dict.keys():
+            new_teacher_dict[key] = (
+                student_model_dict[key] *
+                (1 - keep_rate) + value * keep_rate
+            )
+        else:
+            raise Exception("{} is not found in student model".format(key))
 
-def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, save_to_file=False, result_dir=None, args=None):
+    return new_teacher_dict
+
+def eval_one_epoch(cfg, model, s_model, dataloader, epoch_id, logger, dist_test=False, save_to_file=False, result_dir=None, args=None, 
+                   model_func=None):
     result_dir.mkdir(parents=True, exist_ok=True)
 
     final_output_dir = result_dir / 'final_result' / 'data'
@@ -48,6 +64,7 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
                 broadcast_buffers=False
         )
     model.eval()
+    s_model.train()
 
     if cfg.get('SELF_TRAIN', None) and cfg.SELF_TRAIN.get('DSNORM', None):
         model.apply(set_ds_target)
@@ -55,18 +72,41 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
     if cfg.LOCAL_RANK == 0:
         progress_bar = tqdm.tqdm(total=len(dataloader), leave=True, desc='eval', dynamic_ncols=True)
     start_time = time.time()
+    optimizer = torch.optim.SGD(s_model.parameters(), lr=0.01)
     for i, batch_dict in enumerate(dataloader):
+        optimizer = torch.zero_grad()
         load_data_to_gpu(batch_dict)
         with torch.no_grad():
-            pred_dicts, ret_dict = model(batch_dict)
+            pred_dicts, ret_dict, t_spatial_feature_2d = model(batch_dict)
+        t_query = s_model.query_head(t_spatial_feature_2d)
+        t_value = s_model.value_head(t_spatial_feature_2d)
+        ## here the batch dict should be updated
+        ## batch_dict['gt_boxes'] = pred_dicts['pred_boxes']
+        loss_model, s_tb_dict, s_disp_dict, s_spatial_feature_2d = model_func(s_model, batch)
+        s_query = s_model.query_head(s_spatial_feature_2d)
+        s_value = s_model.value_head(s_spatial_feature_2d)
+        s_model.mem_bank = s_model.memory_update(s_model.mem_bank,
+                                                 t_query.contiguous().unsqueeze(-1).unsqueeze(-1), 
+                                                 t_value.contiguous().unsqueeze(-1).unsqueeze(-1),
+                                                 )
+        mem_s_query  = s_model.memory_read(s_model.mem_bank,
+                                            s_query.contiguous().unsqueeze(-1).unsqueeze(-1), 
+                                            s_value.contiguous().unsqueeze(-1).unsqueeze(-1),
+                                            )
+        loss_mem = s_model.mem_contrastive_loss(s_query, s_spatial_feature_2d, mem_s_query.squeeze(-1).squeeze(-1), s_value,t_spatial_feature_2d, t_value, self.mem_bank)
         disp_dict = {}
-
+        loss = loss_mem + loss_model
+        loss.backward()
+        optimizer.step()
         statistics_info(cfg, ret_dict, metric, disp_dict)
         annos = dataset.generate_prediction_dicts(
             batch_dict, pred_dicts, class_names,
             output_path=final_output_dir if save_to_file else None
         )
+        new_teacher_dict = update_teacher_model(model, s_model, keep_rate=0.9)
+        model.load_state_dict(new_teacher_dict)
         det_annos += annos
+        
         if cfg.LOCAL_RANK == 0:
             progress_bar.set_postfix(disp_dict)
             progress_bar.update()
