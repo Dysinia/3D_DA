@@ -385,7 +385,7 @@ class Detector3DTemplate(nn.Module):
         epoch = checkpoint.get('epoch', -1)
         it = checkpoint.get('it', 0.0)
 
-        self._load_state_dict(checkpoint['model_state'], strict=True)
+        self._load_state_dict(checkpoint['model_state'], strict=False)
 
         if optimizer is not None:
             if 'optimizer_state' in checkpoint and checkpoint['optimizer_state'] is not None:

@@ -1,5 +1,6 @@
 import _init_path
 import os
+os.environ['CUDA_VISIBLE_DEVICES']="1"
 import torch
 from tensorboardX import SummaryWriter
 import time
@@ -11,11 +12,12 @@ import numpy as np
 from pathlib import Path
 import torch.distributed as dist
 from pcdet.datasets import build_dataloader
-from pcdet.models import build_network
+from pcdet.models import build_network, model_fn_decorator, s_model_fn_decorator
 from pcdet.utils import common_utils
 from pcdet.config import cfg, cfg_from_list, cfg_from_yaml_file, log_config_to_file
 from eval_utils import eval_utils
 from pcdet.models.model_utils.dsnorm import DSNorm
+from train_utils.optimization import build_optimizer, build_scheduler
 
 
 def parse_config():
@@ -54,14 +56,17 @@ def parse_config():
     return args, cfg
 
 
-def eval_single_ckpt(model, test_loader, args, eval_output_dir, logger, epoch_id, dist_test=False):
+def eval_single_ckpt(model,s_model,optimizer, test_loader, test_loader_stu, args, eval_output_dir, logger, epoch_id, 
+                    model_func, dist_test=False):
     # load checkpoint
     model.load_params_from_file(filename=args.ckpt, logger=logger, to_cpu=dist_test)
     model.cuda()
+    s_model.load_params_from_file(filename=args.ckpt, logger=logger, to_cpu=dist_test)
+    s_model.cuda()
 
     # start evaluation
     eval_utils.eval_one_epoch(
-        cfg, model, test_loader, epoch_id, logger, dist_test=dist_test,
+        cfg, model, s_model,optimizer, test_loader, test_loader_stu, epoch_id, logger, model_func=model_func, dist_test=dist_test,
         result_dir=eval_output_dir, save_to_file=args.save_to_file, args=args
     )
 
@@ -199,21 +204,28 @@ def main():
             batch_size=args.batch_size,
             dist=dist_test, workers=args.workers, logger=logger, training=False
         )
-
+    _, test_loader_stu, _ = build_dataloader(
+            dataset_cfg=cfg.DATA_CONFIG_TAR,
+            class_names=cfg.DATA_CONFIG_TAR.CLASS_NAMES,
+            batch_size=args.batch_size,
+            dist=dist_test, workers=args.workers, logger=logger, training=False
+        )
     model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=test_set)
+    s_model = build_network(model_cfg=cfg.MODELSTU, num_class=len(cfg.CLASS_NAMES), dataset=test_set)
+    optimizer = build_optimizer(s_model, cfg.OPTIMIZATION)
 
     if cfg.get('SELF_TRAIN', None) and cfg.SELF_TRAIN.get('DSNORM', None):
         model = DSNorm.convert_dsnorm(model)
 
     state_name = 'model_state'
 
-    with torch.no_grad():
-        if args.eval_all:
-            repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger,
+    #with torch.no_grad():
+    if args.eval_all:
+        repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger,
                              ckpt_dir, dist_test=dist_test)
-        else:
-            eval_single_ckpt(model, test_loader, args, eval_output_dir, logger,
-                             epoch_id, dist_test=dist_test)
+    else:
+        eval_single_ckpt(model, s_model, optimizer, test_loader, test_loader_stu, args, eval_output_dir, logger,
+                             epoch_id, model_func=s_model_fn_decorator(), dist_test=dist_test)
 
 
 if __name__ == '__main__':

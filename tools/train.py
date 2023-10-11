@@ -1,5 +1,6 @@
 import _init_path
 import os
+os.environ['CUDA_VISIBLE_DEVICES']="1"
 from pathlib import Path
 import argparse
 import datetime
