@@ -163,42 +163,54 @@ def eval_one_epoch(cfg, model, s_model, optimizer, dataloader, test_loader, epoc
     if cfg.LOCAL_RANK == 0:
         progress_bar = tqdm.tqdm(total=len(dataloader), leave=True, desc='eval', dynamic_ncols=True)
     start_time = time.time()
+    flag = 0
     # eval_mem_epoch(cfg, model, test_loader, epoch_id, logger, dist_test=dist_test, result_dir=result_dir, save_to_file=save_to_file, args=args)
-    for test_time in tqdm.tqdm(range(3), desc="training"):
+    for test_time in tqdm.tqdm(range(50), desc="training"):
         print("test time", test_time)
-        for i, batch_dict in tqdm.tqdm(enumerate(dataloader)):
+        for i, batch_dict in enumerate(dataloader):
             optimizer.zero_grad()
             load_data_to_gpu(batch_dict)
             with torch.no_grad():
                 pred_dicts, ret_dict, t_spatial_feature_2d = model(batch_dict)
+            t_spatial_feature_2d = t_spatial_feature_2d.detach()
 
-            batch_size = len(pred_dicts)
-            t_spatial_feature_2d.requires_grad = True
-
-            t_query = s_model.query_head(t_spatial_feature_2d.mean(dim=[2,3]))
-            t_value = s_model.value_head(t_spatial_feature_2d.mean(dim=[2,3]))
-            batch_dict = produce_ps_label(batch_dict=batch_dict, pred_dicts=pred_dicts)
+            if flag == 1:
+                batch_dict = produce_ps_label(batch_dict=batch_dict, pred_dicts=pred_dicts)
             loss_model, s_tb_dict, s_disp_dict, s_spatial_feature_2d = model_func(s_model, batch_dict)
+            
+            # s_query = s_model.query_head(s_spatial_feature_2d.mean(dim=[2,3]))
+            # t_query = s_model.query_head(t_spatial_feature_2d.mean(dim=[2,3]))
+            
 
             # s_spatial_feature_2d = max_pool(s_spatial_feature_2d).contiguous.view(1,-1)
-            s_query = s_model.query_head(s_spatial_feature_2d.mean(dim=[2,3]))
-            s_value = s_model.value_head(s_spatial_feature_2d.mean(dim=[2,3]))
-            s_model.mem_bank = s_model.memory_update(s_model.mem_bank,
-                                                     t_query.contiguous().unsqueeze(-1).unsqueeze(-1), 
-                                                     t_value.contiguous().unsqueeze(-1).unsqueeze(-1),
-                                                     )
-            mem_s_query  = s_model.memory_read(s_model.mem_bank,
-                                                s_query.contiguous().unsqueeze(-1).unsqueeze(-1), 
-                                                s_value.contiguous().unsqueeze(-1).unsqueeze(-1),
-                                                )
-            loss_mem = s_model.get_mem_loss(s_query, s_spatial_feature_2d, mem_s_query.squeeze(-1).squeeze(-1), s_value,t_spatial_feature_2d, t_value, s_model.mem_bank)
+            # s_query = s_model.query_head(s_spatial_feature_2d.mean(dim=[2,3]))
+            # s_value = s_model.value_head(s_spatial_feature_2d.mean(dim=[2,3]))
+            # s_model.mem_bank = s_model.memory_update(s_model.mem_bank,
+            #                                          t_query.contiguous().unsqueeze(-1).unsqueeze(-1), 
+            #                                          t_value.contiguous().unsqueeze(-1).unsqueeze(-1),
+            #                                          )
+            # mem_s_query  = s_model.memory_read(s_model.mem_bank,
+            #                                     s_query.contiguous().unsqueeze(-1).unsqueeze(-1), 
+            #                                     s_value.contiguous().unsqueeze(-1).unsqueeze(-1),
+            #                                     )
+            # loss_mem = s_model.get_mem_loss(s_query, s_spatial_feature_2d, mem_s_query.squeeze(-1).squeeze(-1), s_value,t_spatial_feature_2d, t_value, s_model.mem_bank)
+            loss_mem = s_model.mem_loss(t_spatial_feature_2d, s_spatial_feature_2d)
+            
             disp_dict = {}
-            loss = loss_mem + loss_model
-            loss.backward()
-            optimizer.step()
-            new_teacher_dict = update_teacher_model(s_model, model, keep_rate=0.99999)
-            model.load_state_dict(new_teacher_dict)
+            # loss = loss_mem + loss_model
+            weight_model = loss_model.detach()
+            weight_mem = loss_mem.detach()
+            print("loss_mem", loss_mem)
+            loss = 0.01*loss_mem + 0.09*loss_model
+            print("loss_model", loss_model)
+            if i > s_model.mem_items -1 :
+                loss_mem.backward()
+                optimizer.step()
+            if loss_mem is not 0:
+                flag = 1
         
+        new_teacher_dict = update_teacher_model(s_model, model, keep_rate=0.999)
+        model.load_state_dict(new_teacher_dict)
         eval_mem_epoch(cfg, model, test_loader, epoch_id, logger, dist_test=dist_test, result_dir=result_dir, save_to_file=save_to_file, args=args)
             
     eval_mem_epoch(cfg, model, test_loader, epoch_id, logger, dist_test=dist_test, result_dir=result_dir, save_to_file=save_to_file, args=args)

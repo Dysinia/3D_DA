@@ -1,6 +1,6 @@
 import _init_path
 import os
-os.environ['CUDA_VISIBLE_DEVICES']="1"
+os.environ['CUDA_VISIBLE_DEVICES']="0"
 import torch
 from tensorboardX import SummaryWriter
 import time
@@ -65,6 +65,7 @@ def eval_single_ckpt(model,s_model,optimizer, test_loader, test_loader_stu, args
     s_model.cuda()
 
     # start evaluation
+    eval_utils.eval_mem_epoch(cfg, model, test_loader, epoch_id, logger, dist_test=dist_test, result_dir=eval_output_dir, save_to_file=args.save_to_file, args=args)
     eval_utils.eval_one_epoch(
         cfg, model, s_model,optimizer, test_loader, test_loader_stu, epoch_id, logger, model_func=model_func, dist_test=dist_test,
         result_dir=eval_output_dir, save_to_file=args.save_to_file, args=args
@@ -210,6 +211,7 @@ def main():
             batch_size=args.batch_size,
             dist=dist_test, workers=args.workers, logger=logger, training=False
         )
+        
     model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=test_set)
     s_model = build_network(model_cfg=cfg.MODELSTU, num_class=len(cfg.CLASS_NAMES), dataset=test_set)
     optimizer = build_optimizer(s_model, cfg.OPTIMIZATION)

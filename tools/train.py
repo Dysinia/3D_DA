@@ -1,12 +1,12 @@
 import _init_path
 import os
-os.environ['CUDA_VISIBLE_DEVICES']="1"
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 from pathlib import Path
 import argparse
 import datetime
 import glob
 
-import torch
+import torch 
 import torch.nn as nn
 from tensorboardX import SummaryWriter
 import torch.distributed as dist
@@ -208,37 +208,37 @@ def main():
     logger.info('**********************End training %s/%s(%s)**********************\n\n\n'
                 % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
 
-    logger.info('**********************Start evaluation %s/%s(%s)**********************' %
-                (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
+    # logger.info('**********************Start evaluation %s/%s(%s)**********************' %
+    #             (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
 
-    if args.eval_fov_only:
-        cfg.DATA_CONFIG_TAR.FOV_POINTS_ONLY = True
+    # if args.eval_fov_only:
+    #     cfg.DATA_CONFIG_TAR.FOV_POINTS_ONLY = True
 
-    if cfg.get('DATA_CONFIG_TAR', None) and not args.eval_src:
-        test_set, test_loader, sampler = build_dataloader(
-            dataset_cfg=cfg.DATA_CONFIG_TAR,
-            class_names=cfg.DATA_CONFIG_TAR.CLASS_NAMES,
-            batch_size=args.batch_size,
-            dist=dist_train, workers=args.workers, logger=logger, training=False
-        )
-    else:
-        test_set, test_loader, sampler = build_dataloader(
-            dataset_cfg=cfg.DATA_CONFIG,
-            class_names=cfg.CLASS_NAMES,
-            batch_size=args.batch_size,
-            dist=dist_train, workers=args.workers, logger=logger, training=False
-        )
+    # if cfg.get('DATA_CONFIG_TAR', None) and not args.eval_src:
+    #     test_set, test_loader, sampler = build_dataloader(
+    #         dataset_cfg=cfg.DATA_CONFIG_TAR,
+    #         class_names=cfg.DATA_CONFIG_TAR.CLASS_NAMES,
+    #         batch_size=args.batch_size,
+    #         dist=dist_train, workers=args.workers, logger=logger, training=False
+    #     )
+    # else:
+    #     test_set, test_loader, sampler = build_dataloader(
+    #         dataset_cfg=cfg.DATA_CONFIG,
+    #         class_names=cfg.CLASS_NAMES,
+    #         batch_size=args.batch_size,
+    #         dist=dist_train, workers=args.workers, logger=logger, training=False
+    #     )
 
-    eval_output_dir = output_dir / 'eval' / 'eval_with_train'
-    eval_output_dir.mkdir(parents=True, exist_ok=True)
+    # eval_output_dir = output_dir / 'eval' / 'eval_with_train'
+    # eval_output_dir.mkdir(parents=True, exist_ok=True)
     # Only evaluate the last args.num_epochs_to_eval epochs
-    args.start_epoch = max(args.epochs - args.num_epochs_to_eval, 0)
+    # args.start_epoch = max(args.epochs - args.num_epochs_to_eval, 0)
 
-    repeat_eval_ckpt(
-        model.module if dist_train else model,
-        test_loader, args, eval_output_dir, logger, ckpt_dir,
-        dist_test=dist_train
-    )
+    # repeat_eval_ckpt(
+    #     model.module if dist_train else model,
+    #     test_loader, args, eval_output_dir, logger, ckpt_dir,
+    #     dist_test=dist_train
+    # )
     logger.info('**********************End evaluation %s/%s(%s)**********************' %
                 (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
 
